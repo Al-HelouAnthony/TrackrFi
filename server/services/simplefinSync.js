@@ -149,18 +149,25 @@ async function syncInstitution(client, institution) {
         const categoriesText = catResult.rows.map((c) => `${c.name} (${c.plaid_primary_code})`).join(", ");
         const subcategoriesText = subcatResult.rows.map((s) => `${s.name} (${s.plaid_detailed_code})`).join(", ");
 
-        // Filter out transactions that already exist or are duplicates
-        let newTransactions = [];
+        // Filter out transactions that already exist or are duplicates, but flag uncategorized ones for re-processing
+        let pendingTransactions = [];
         for (const tx of transactions) {
-          const existingTx = await client.query('SELECT id FROM transactions WHERE simplefin_transaction_id = $1', [tx.id]);
-          if (existingTx.rows.length > 0) continue;
+          const existingTx = await client.query('SELECT id, category_id FROM transactions WHERE simplefin_transaction_id = $1', [tx.id]);
           
           const sfDate = new Date(tx.posted * 1000);
           const sfAmount = parseFloat(tx.amount); // negative means money left
+
+          if (existingTx.rows.length > 0) {
+            // If it exists but has no category, let's let the AI try to categorize it again
+            if (existingTx.rows[0].category_id === null) {
+              pendingTransactions.push({ ...tx, dbId: existingTx.rows[0].id, parsedDate: sfDate, parsedAmount: sfAmount, isUpdate: true });
+            }
+            continue;
+          }
           
           // Deduplication: Smart Merge
           const potentialDuplicates = await client.query(`
-            SELECT id FROM transactions 
+            SELECT id, category_id FROM transactions 
             WHERE account_id = $1 
               AND simplefin_transaction_id IS NULL 
               AND amount = $2
@@ -171,16 +178,20 @@ async function syncInstitution(client, institution) {
           
           if (potentialDuplicates.rows.length > 0) {
             await client.query('UPDATE transactions SET simplefin_transaction_id = $1 WHERE id = $2', [tx.id, potentialDuplicates.rows[0].id]);
+            // If the manual/email transaction doesn't have a category, re-categorize it!
+            if (potentialDuplicates.rows[0].category_id === null) {
+               pendingTransactions.push({ ...tx, dbId: potentialDuplicates.rows[0].id, parsedDate: sfDate, parsedAmount: sfAmount, isUpdate: true });
+            }
             continue;
           }
-          newTransactions.push({ ...tx, parsedDate: sfDate, parsedAmount: sfAmount });
+          pendingTransactions.push({ ...tx, dbId: null, parsedDate: sfDate, parsedAmount: sfAmount, isUpdate: false });
         }
 
-        if (newTransactions.length > 0) {
+        if (pendingTransactions.length > 0) {
           // Batch AI categorization (max 100 per chunk to avoid massive context limits)
           const chunkSize = 100;
-          for (let i = 0; i < newTransactions.length; i += chunkSize) {
-            const chunk = newTransactions.slice(i, i + chunkSize);
+          for (let i = 0; i < pendingTransactions.length; i += chunkSize) {
+            const chunk = pendingTransactions.slice(i, i + chunkSize);
             let aiCategorizations = {};
 
             try {
@@ -230,7 +241,7 @@ ${chunk.map((tx, idx) => `[ID: ${idx}] Merchant raw: "${tx.description}", Amount
               console.error("AI batch categorization failed", err);
             }
 
-            // Insert into DB
+            // Insert or Update into DB
             for (let j = 0; j < chunk.length; j++) {
               const tx = chunk[j];
               const aiData = aiCategorizations[j] || {};
@@ -255,11 +266,18 @@ ${chunk.map((tx, idx) => `[ID: ${idx}] Merchant raw: "${tx.description}", Amount
                 subcategory_id = userSubcatResult.rows[0]?.id || null;
               }
 
-              await client.query(
-                `INSERT INTO transactions (user_id, account_id, name, amount, date, category_id, subcategory_id, source, simplefin_transaction_id, is_ignored) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-                [institution.user_id, accountId, cleanMerchantName, tx.parsedAmount, tx.parsedDate, category_id, subcategory_id, 'Bank Sync', tx.id, is_ignored]
-              );
+              if (tx.isUpdate) {
+                await client.query(
+                  `UPDATE transactions SET name = $1, category_id = $2, subcategory_id = $3, is_ignored = $4 WHERE id = $5`,
+                  [cleanMerchantName, category_id, subcategory_id, is_ignored, tx.dbId]
+                );
+              } else {
+                await client.query(
+                  `INSERT INTO transactions (user_id, account_id, name, amount, date, category_id, subcategory_id, source, simplefin_transaction_id, is_ignored) 
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                  [institution.user_id, accountId, cleanMerchantName, tx.parsedAmount, tx.parsedDate, category_id, subcategory_id, 'Bank Sync', tx.id, is_ignored]
+                );
+              }
             }
           }
         }
