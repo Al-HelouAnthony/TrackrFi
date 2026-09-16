@@ -53,7 +53,24 @@ app.listen(PORT, async () => {
     console.log("Running auto-migrations for SimpleFin...");
     await pool.query('ALTER TABLE institutions ADD COLUMN IF NOT EXISTS simplefin_access_url TEXT;');
     await pool.query('ALTER TABLE accounts ADD COLUMN IF NOT EXISTS simplefin_account_id TEXT UNIQUE;');
-    await pool.query('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS simplefin_transaction_id TEXT UNIQUE;');
+    await pool.query('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS simplefin_transaction_id TEXT;');
+
+    // Hard deduplication in case race conditions occurred before unique constraint was added
+    console.log("Running deduplication sweep...");
+    await pool.query(`
+      DELETE FROM transactions a USING transactions b
+      WHERE a.id > b.id 
+        AND a.simplefin_transaction_id = b.simplefin_transaction_id 
+        AND a.simplefin_transaction_id IS NOT NULL;
+    `);
+
+    // Force add the unique constraint now that duplicates are gone
+    try {
+      await pool.query('ALTER TABLE transactions ADD CONSTRAINT unique_simplefin_tx UNIQUE (simplefin_transaction_id);');
+    } catch(e) {
+      // Ignore if it already exists
+    }
+    
     console.log("Auto-migrations completed successfully.");
     
     // Start the SimpleFin sync immediately on boot, then every 5 hours
