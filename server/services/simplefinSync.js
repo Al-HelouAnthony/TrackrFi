@@ -265,17 +265,8 @@ ${chunk.map((tx, idx) => `[ID: ${idx}] Merchant raw: "${tx.description}", Amount
                     }
                   }
                 }
-              };
-              
-              const aiResponse = await ai.models.generateContent({
-                model: 'gemini-3.6-flash',
-                contents: prompt,
-                config: {
-                  responseMimeType: "application/json",
-                  responseSchema: { type: Type.OBJECT, properties: schemaProperties },
-                },
               });
-              
+
               const parsed = JSON.parse(aiResponse.text);
               if (parsed.results) {
                 parsed.results.forEach(res => {
@@ -285,36 +276,35 @@ ${chunk.map((tx, idx) => `[ID: ${idx}] Merchant raw: "${tx.description}", Amount
             } catch (err) {
               console.error("AI batch categorization failed", err);
             }
+          }
 
-            // Insert or Update into DB
-            for (let j = 0; j < chunk.length; j++) {
-              const tx = chunk[j];
-              const aiData = aiCategorizations[j] || {};
-              
-              let category_id = null;
-              let subcategory_id = null;
-              let cleanMerchantName = aiData.merchant_name || tx.description;
-              let is_ignored = aiData.is_ignored || false;
+          // Insert or Update ALL pending transactions into DB
+          for (let j = 0; j < pendingTransactions.length; j++) {
+            const tx = pendingTransactions[j];
+            // Only the first 100 will have AI data. The rest will fallback to defaults (null category).
+            const aiData = aiCategorizations[j] || {};
+            
+            const cleanMerchantName = aiData.clean_merchant_name || tx.description;
+            const is_ignored = aiData.is_ignored || false;
+            
+            let category_id = null;
+            let subcategory_id = null;
 
-              if (aiData.plaid_primary_code) {
-                const userCatResult = await client.query(
-                  "SELECT id FROM categories WHERE plaid_primary_code = $1 AND user_id = $2",
-                  [aiData.plaid_primary_code, institution.user_id]
-                );
-                category_id = userCatResult.rows[0]?.id || null;
-              }
-              if (category_id && aiData.plaid_detailed_code) {
-                const userSubcatResult = await client.query(
-                  "SELECT id FROM subcategories WHERE plaid_detailed_code = $1 AND category_id = $2",
-                  [aiData.plaid_detailed_code, category_id]
-                );
-                subcategory_id = userSubcatResult.rows[0]?.id || null;
-              }
+            if (aiData.plaid_primary_code) {
+              const catRes = await client.query('SELECT id FROM categories WHERE user_id = $1 AND plaid_primary_code = $2', [institution.user_id, aiData.plaid_primary_code]);
+              if (catRes.rows.length > 0) category_id = catRes.rows[0].id;
+            }
 
+            if (category_id && aiData.plaid_detailed_code) {
+              const subcatRes = await client.query('SELECT id FROM subcategories WHERE category_id = $1 AND plaid_detailed_code = $2', [category_id, aiData.plaid_detailed_code]);
+              if (subcatRes.rows.length > 0) subcategory_id = subcatRes.rows[0].id;
+            }
+
+            try {
               if (tx.isUpdate) {
                 await client.query(
-                  `UPDATE transactions SET name = $1, category_id = $2, subcategory_id = $3, is_ignored = $4 WHERE id = $5`,
-                  [cleanMerchantName, category_id, subcategory_id, is_ignored, tx.dbId]
+                  `UPDATE transactions SET name = $1, category_id = $2, subcategory_id = $3, is_ignored = $4, simplefin_transaction_id = $5 WHERE id = $6`,
+                  [cleanMerchantName, category_id, subcategory_id, is_ignored, tx.id, tx.dbId]
                 );
               } else {
                 await client.query(
@@ -323,8 +313,11 @@ ${chunk.map((tx, idx) => `[ID: ${idx}] Merchant raw: "${tx.description}", Amount
                   [institution.user_id, accountId, cleanMerchantName, tx.parsedAmount, tx.parsedDate, category_id, subcategory_id, 'Bank Sync', tx.id, is_ignored]
                 );
               }
+            } catch (insertErr) {
+               console.error(`Failed to insert tx ${tx.id}:`, insertErr.message);
             }
           }
+          summary.push(`Processed ${pendingTransactions.length} transactions for account ${sfAccount.name}`);
         }
       }
     }
