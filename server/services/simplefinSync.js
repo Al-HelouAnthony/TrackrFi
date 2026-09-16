@@ -123,38 +123,44 @@ async function syncInstitution(client, institution) {
       }
 
       let accountId = null;
-      const existingAccount = await client.query('SELECT id, name FROM accounts WHERE simplefin_account_id = $1', [sfAccount.id]);
+      const existingAccount = await client.query('SELECT id, name, type FROM accounts WHERE simplefin_account_id = $1', [sfAccount.id]);
       
+      // Detect account type based on name (English and French)
+      let accType = 'Checking';
+      const lowerName = sfAccount.name.toLowerCase();
+      if (lowerName.includes('savings') || lowerName.includes('épargne') || lowerName.includes('epargne')) accType = 'Savings';
+      else if (lowerName.includes('credit') || lowerName.includes('crédit') || lowerName.includes('visa') || lowerName.includes('mastercard')) accType = 'Credit';
+      else if (lowerName.includes('loan') || lowerName.includes('prêt') || lowerName.includes('pret') || lowerName.includes('mortgage') || lowerName.includes('hypothèque')) accType = 'Loan';
+
       if (existingAccount.rows.length > 0) {
         accountId = existingAccount.rows[0].id;
         
         let cleanAccountName = existingAccount.rows[0].name;
-        // Auto-heal ugly account names (or retry if they still have numbers/asterisks from a previous rate-limit failure)
-        if (cleanAccountName === sfAccount.name || /[\d*]/.test(cleanAccountName)) {
+        // Auto-heal ugly account names (or retry if they still have numbers/asterisks from a previous rate-limit failure, or are in French)
+        if (cleanAccountName === sfAccount.name || /[\d*@]/.test(cleanAccountName) || lowerName.includes('épargne') || lowerName.includes('prêt') || lowerName.includes('forfait') || cleanAccountName.includes('Épargne')) {
           try {
             const aiResponse = await ai.models.generateContent({
               model: 'gemini-3.6-flash',
-              contents: `Format this bank account name to be clean and simple. Remove any account numbers, asterisks, or random IDs. Just return the clean name. No extra text. Example input: "Everyday Checking *1234" -> Example output: "Everyday Checking".\nAccount: "${sfAccount.name}"`
+              contents: `Format this bank account name to be clean and simple. Remove any account numbers, asterisks, or random IDs. If the name is in French, TRANSLATE it to English. Just return the clean name. No extra text. Example input: "Épargne @ intérêt élevé RBC" -> Example output: "High Interest Savings".\nAccount: "${sfAccount.name}"`
             });
             cleanAccountName = aiResponse.text.trim();
           } catch(e) { console.error("AI account auto-heal failed", e); }
         }
 
-        // Update balance and ensure it's attached to the correct institution and name
-        await client.query('UPDATE accounts SET balance = $1, institution_id = $2, name = $3 WHERE id = $4', [sfAccount.balance, target_institution_id, cleanAccountName, accountId]);
-      } else {
-        // Detect account type based on name
-        let accType = 'Checking';
-        const lowerName = sfAccount.name.toLowerCase();
-        if (lowerName.includes('savings')) accType = 'Savings';
-        else if (lowerName.includes('credit') || lowerName.includes('visa') || lowerName.includes('mastercard')) accType = 'Credit';
-        else if (lowerName.includes('loan') || lowerName.includes('mortgage')) accType = 'Loan';
+        // Auto-heal the type if it was previously set incorrectly (e.g. Loan was set to Checking)
+        let finalType = existingAccount.rows[0].type;
+        if (finalType === 'Checking' && accType !== 'Checking') {
+          finalType = accType;
+        }
 
+        // Update balance and ensure it's attached to the correct institution and name
+        await client.query('UPDATE accounts SET balance = $1, institution_id = $2, name = $3, type = $4 WHERE id = $5', [sfAccount.balance, target_institution_id, cleanAccountName, finalType, accountId]);
+      } else {
         let cleanAccountName = sfAccount.name;
         try {
           const aiResponse = await ai.models.generateContent({
             model: 'gemini-3.6-flash',
-            contents: `Format this bank account name to be clean and simple. Remove any account numbers, asterisks, or random IDs. Just return the clean name. No extra text. Example input: "Everyday Checking *1234" -> Example output: "Everyday Checking".\nAccount: "${sfAccount.name}"`
+            contents: `Format this bank account name to be clean and simple. Remove any account numbers, asterisks, or random IDs. If the name is in French, TRANSLATE it to English. Just return the clean name. No extra text. Example input: "Épargne @ intérêt élevé RBC" -> Example output: "High Interest Savings".\nAccount: "${sfAccount.name}"`
           });
           cleanAccountName = aiResponse.text.trim();
         } catch(e) { console.error("AI account rename failed", e); }
