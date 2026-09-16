@@ -64,8 +64,8 @@ async function syncInstitution(client, institution) {
       
       if (existingAccount.rows.length > 0) {
         accountId = existingAccount.rows[0].id;
-        // Update balance to match official SimpleFin balance
-        await client.query('UPDATE accounts SET balance = $1 WHERE id = $2', [sfAccount.balance, accountId]);
+        // Update balance and ensure it's attached to the correct institution
+        await client.query('UPDATE accounts SET balance = $1, institution_id = $2 WHERE id = $3', [sfAccount.balance, target_institution_id, accountId]);
       } else {
         // Auto-create missing account
         const newAccount = await client.query(
