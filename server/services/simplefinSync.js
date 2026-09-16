@@ -83,17 +83,32 @@ async function syncInstitution(client, institution) {
       // Intelligently group accounts into their correct banks (e.g. CIBC vs RBC)
       if (sfAccount.org && sfAccount.org.name) {
         const existingInst = await client.query(
-          'SELECT id FROM institutions WHERE user_id = $1 AND (name ILIKE $2 OR $2 ILIKE \'%\' || name || \'%\' OR logo ILIKE $3) LIMIT 1', 
+          'SELECT id, name FROM institutions WHERE user_id = $1 AND (name ILIKE $2 OR $2 ILIKE \'%\' || name || \'%\' OR logo ILIKE $3) LIMIT 1', 
           [institution.user_id, sfAccount.org.name, `%${sfAccount.org.domain || 'none'}%`]
         );
         
         if (existingInst.rows.length > 0) {
           target_institution_id = existingInst.rows[0].id;
+          
+          // Auto-heal ugly institution names
+          if (existingInst.rows[0].name === sfAccount.org.name) {
+            let cleanOrgName = sfAccount.org.name;
+            try {
+              const aiResponse = await ai.models.generateContent({
+                model: 'gemini-3.6-flash',
+                contents: `Give me just the standard short abbreviation for this bank (e.g. CIBC, RBC, TD, BMO, Scotia). If none, just return a clean short name. No extra text.\nBank: "${sfAccount.org.name}"`
+              });
+              cleanOrgName = aiResponse.text.trim();
+              if (cleanOrgName !== sfAccount.org.name) {
+                await client.query('UPDATE institutions SET name = $1 WHERE id = $2', [cleanOrgName, target_institution_id]);
+              }
+            } catch(e) { console.error("AI org auto-heal failed", e); }
+          }
         } else {
           let cleanOrgName = sfAccount.org.name;
           try {
             const aiResponse = await ai.models.generateContent({
-              model: 'gemini-3.6-flash-lite',
+              model: 'gemini-3.6-flash',
               contents: `Give me just the standard short abbreviation for this bank (e.g. CIBC, RBC, TD, BMO, Scotia). If none, just return a clean short name. No extra text.\nBank: "${sfAccount.org.name}"`
             });
             cleanOrgName = aiResponse.text.trim();
@@ -108,12 +123,25 @@ async function syncInstitution(client, institution) {
       }
 
       let accountId = null;
-      const existingAccount = await client.query('SELECT id FROM accounts WHERE simplefin_account_id = $1', [sfAccount.id]);
+      const existingAccount = await client.query('SELECT id, name FROM accounts WHERE simplefin_account_id = $1', [sfAccount.id]);
       
       if (existingAccount.rows.length > 0) {
         accountId = existingAccount.rows[0].id;
-        // Update balance and ensure it's attached to the correct institution
-        await client.query('UPDATE accounts SET balance = $1, institution_id = $2 WHERE id = $3', [sfAccount.balance, target_institution_id, accountId]);
+        
+        let cleanAccountName = existingAccount.rows[0].name;
+        // Auto-heal ugly account names
+        if (cleanAccountName === sfAccount.name) {
+          try {
+            const aiResponse = await ai.models.generateContent({
+              model: 'gemini-3.6-flash',
+              contents: `Format this bank account name to be clean and simple. Remove any account numbers, asterisks, or random IDs. Just return the clean name. No extra text. Example input: "Everyday Checking *1234" -> Example output: "Everyday Checking".\nAccount: "${sfAccount.name}"`
+            });
+            cleanAccountName = aiResponse.text.trim();
+          } catch(e) { console.error("AI account auto-heal failed", e); }
+        }
+
+        // Update balance and ensure it's attached to the correct institution and name
+        await client.query('UPDATE accounts SET balance = $1, institution_id = $2, name = $3 WHERE id = $4', [sfAccount.balance, target_institution_id, cleanAccountName, accountId]);
       } else {
         // Detect account type based on name
         let accType = 'Checking';
@@ -125,7 +153,7 @@ async function syncInstitution(client, institution) {
         let cleanAccountName = sfAccount.name;
         try {
           const aiResponse = await ai.models.generateContent({
-            model: 'gemini-3.6-flash-lite',
+            model: 'gemini-3.6-flash',
             contents: `Format this bank account name to be clean and simple. Remove any account numbers, asterisks, or random IDs. Just return the clean name. No extra text. Example input: "Everyday Checking *1234" -> Example output: "Everyday Checking".\nAccount: "${sfAccount.name}"`
           });
           cleanAccountName = aiResponse.text.trim();
