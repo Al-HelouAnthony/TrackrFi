@@ -149,6 +149,8 @@ async function syncInstitution(client, institution) {
         const categoriesText = catResult.rows.map((c) => `${c.name} (${c.plaid_primary_code})`).join(", ");
         const subcategoriesText = subcatResult.rows.map((s) => `${s.name} (${s.plaid_detailed_code})`).join(", ");
 
+        // Filter out transactions that already exist or are duplicates
+        let newTransactions = [];
         for (const tx of transactions) {
           const existingTx = await client.query('SELECT id FROM transactions WHERE simplefin_transaction_id = $1', [tx.id]);
           if (existingTx.rows.length > 0) continue;
@@ -171,67 +173,95 @@ async function syncInstitution(client, institution) {
             await client.query('UPDATE transactions SET simplefin_transaction_id = $1 WHERE id = $2', [tx.id, potentialDuplicates.rows[0].id]);
             continue;
           }
-          
-          // Categorization
-          let category_id = null;
-          let subcategory_id = null;
-          let cleanMerchantName = tx.description;
-          let is_ignored = false;
-          
-          try {
-            const prompt = `Categorize this bank transaction.
-Merchant raw: "${tx.description}"
-Amount: ${sfAmount} (negative means purchase/withdrawal)
+          newTransactions.push({ ...tx, parsedDate: sfDate, parsedAmount: sfAmount });
+        }
 
+        if (newTransactions.length > 0) {
+          // Batch AI categorization (max 100 per chunk to avoid massive context limits)
+          const chunkSize = 100;
+          for (let i = 0; i < newTransactions.length; i += chunkSize) {
+            const chunk = newTransactions.slice(i, i + chunkSize);
+            let aiCategorizations = {};
+
+            try {
+              const prompt = `Categorize these bank transactions.
 Primary category codes: [${categoriesText}]
 Subcategory codes: [${subcategoriesText}]
 
 IMPORTANT:
 1. merchant_name MUST be clean, simple, and ALL CAPS (strip store numbers).
-2. If this is a payment to a credit card or an internal transfer, set is_ignored to true.
+2. If payment to a credit card or internal transfer, set is_ignored to true.
+
+Transactions:
+${chunk.map((tx, idx) => `[ID: ${idx}] Merchant raw: "${tx.description}", Amount: ${tx.parsedAmount}`).join("\n")}
 `;
-            const schemaProperties = {
-              merchant_name: { type: Type.STRING },
-              plaid_primary_code: { type: Type.STRING },
-              plaid_detailed_code: { type: Type.STRING },
-              is_ignored: { type: Type.BOOLEAN },
-            };
-            
-            const aiResponse = await ai.models.generateContent({
-              model: 'gemini-3.6-flash-lite',
-              contents: prompt,
-              config: {
-                responseMimeType: "application/json",
-                responseSchema: { type: Type.OBJECT, properties: schemaProperties },
-              },
-            });
-            const parsed = JSON.parse(aiResponse.text);
-            cleanMerchantName = parsed.merchant_name || cleanMerchantName;
-            is_ignored = parsed.is_ignored || false;
-            
-            if (parsed.plaid_primary_code) {
-              const userCatResult = await client.query(
-                "SELECT id FROM categories WHERE plaid_primary_code = $1 AND user_id = $2",
-                [parsed.plaid_primary_code, institution.user_id]
-              );
-              category_id = userCatResult.rows[0]?.id || null;
+              const schemaProperties = {
+                results: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.INTEGER },
+                      merchant_name: { type: Type.STRING },
+                      plaid_primary_code: { type: Type.STRING },
+                      plaid_detailed_code: { type: Type.STRING },
+                      is_ignored: { type: Type.BOOLEAN },
+                    }
+                  }
+                }
+              };
+              
+              const aiResponse = await ai.models.generateContent({
+                model: 'gemini-3.6-flash',
+                contents: prompt,
+                config: {
+                  responseMimeType: "application/json",
+                  responseSchema: { type: Type.OBJECT, properties: schemaProperties },
+                },
+              });
+              
+              const parsed = JSON.parse(aiResponse.text);
+              if (parsed.results) {
+                parsed.results.forEach(res => {
+                  aiCategorizations[res.id] = res;
+                });
+              }
+            } catch (err) {
+              console.error("AI batch categorization failed", err);
             }
-            if (category_id && parsed.plaid_detailed_code) {
-              const userSubcatResult = await client.query(
-                "SELECT id FROM subcategories WHERE plaid_detailed_code = $1 AND category_id = $2",
-                [parsed.plaid_detailed_code, category_id]
+
+            // Insert into DB
+            for (let j = 0; j < chunk.length; j++) {
+              const tx = chunk[j];
+              const aiData = aiCategorizations[j] || {};
+              
+              let category_id = null;
+              let subcategory_id = null;
+              let cleanMerchantName = aiData.merchant_name || tx.description;
+              let is_ignored = aiData.is_ignored || false;
+
+              if (aiData.plaid_primary_code) {
+                const userCatResult = await client.query(
+                  "SELECT id FROM categories WHERE plaid_primary_code = $1 AND user_id = $2",
+                  [aiData.plaid_primary_code, institution.user_id]
+                );
+                category_id = userCatResult.rows[0]?.id || null;
+              }
+              if (category_id && aiData.plaid_detailed_code) {
+                const userSubcatResult = await client.query(
+                  "SELECT id FROM subcategories WHERE plaid_detailed_code = $1 AND category_id = $2",
+                  [aiData.plaid_detailed_code, category_id]
+                );
+                subcategory_id = userSubcatResult.rows[0]?.id || null;
+              }
+
+              await client.query(
+                `INSERT INTO transactions (user_id, account_id, name, amount, date, category_id, subcategory_id, source, simplefin_transaction_id, is_ignored) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                [institution.user_id, accountId, cleanMerchantName, tx.parsedAmount, tx.parsedDate, category_id, subcategory_id, 'Bank Sync', tx.id, is_ignored]
               );
-              subcategory_id = userSubcatResult.rows[0]?.id || null;
             }
-          } catch(err) {
-             console.error("AI categorization failed for", tx.description, err);
           }
-          
-          await client.query(
-            `INSERT INTO transactions (user_id, account_id, name, amount, date, category_id, subcategory_id, source, simplefin_transaction_id, is_ignored) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [institution.user_id, accountId, cleanMerchantName, sfAmount, sfDate, category_id, subcategory_id, 'Bank Sync', tx.id, is_ignored]
-          );
         }
       }
     }
