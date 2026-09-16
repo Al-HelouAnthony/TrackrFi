@@ -54,9 +54,19 @@ export async function syncUserInstitutions(userId) {
 
 async function syncInstitution(client, institution) {
   try {
-    const accessUrl = institution.simplefin_access_url;
-    // According to SimpleFin docs, the accounts and transactions are at /accounts
-    const response = await fetch(`${accessUrl}/accounts`);
+    const accessUrlObj = new URL(institution.simplefin_access_url);
+    const authHeader = 'Basic ' + Buffer.from(`${accessUrlObj.username}:${accessUrlObj.password}`).toString('base64');
+    
+    // Remove credentials from the URL so fetch doesn't throw an error
+    accessUrlObj.username = '';
+    accessUrlObj.password = '';
+    const cleanUrl = accessUrlObj.toString();
+    
+    const response = await fetch(`${cleanUrl}/accounts`, {
+      headers: {
+        'Authorization': authHeader
+      }
+    });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     
     const data = await response.json();
