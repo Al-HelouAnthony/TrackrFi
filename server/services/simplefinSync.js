@@ -69,8 +69,8 @@ async function syncInstitution(client, institution) {
       } else {
         // Auto-create missing account
         const newAccount = await client.query(
-          'INSERT INTO accounts (user_id, institution_id, name, type, balance, simplefin_account_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-          [institution.user_id, target_institution_id, sfAccount.name, 'Bank', sfAccount.balance, sfAccount.id]
+          'INSERT INTO accounts (user_id, institution_id, name, type, balance, simplefin_account_id, currency, logo) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+          [institution.user_id, target_institution_id, sfAccount.name, 'Bank', sfAccount.balance, sfAccount.id, sfAccount.currency || 'CAD', 'https://logo.clearbit.com/' + (sfAccount.org?.domain || 'bank.com')]
         );
         accountId = newAccount.rows[0].id;
       }
