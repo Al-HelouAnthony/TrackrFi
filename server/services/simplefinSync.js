@@ -65,9 +65,14 @@ async function syncInstitution(client, institution) {
     accessUrlObj.password = '';
     const cleanUrl = accessUrlObj.toString();
     
-    const response = await fetch(`${cleanUrl}/accounts`, {
+    // Ask SimpleFin for up to 2 years of transaction history
+    const twoYearsAgo = Math.floor(Date.now() / 1000) - (2 * 365 * 24 * 60 * 60);
+
+    const response = await fetch(`${cleanUrl}/accounts?start-date=${twoYearsAgo}`, {
+      method: 'GET',
       headers: {
-        'Authorization': authHeader
+        'Authorization': authHeader,
+        'Accept': 'application/json'
       }
     });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
