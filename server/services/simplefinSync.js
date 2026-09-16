@@ -222,6 +222,12 @@ async function syncInstitution(client, institution) {
         }
 
         if (pendingTransactions.length > 0) {
+          // Cap the number of transactions to process per sync to prevent timeouts and rate limits
+          if (pendingTransactions.length > 100) {
+             console.log(`Capping transaction categorization at 100 (out of ${pendingTransactions.length}) to prevent timeouts.`);
+             pendingTransactions = pendingTransactions.slice(0, 100);
+          }
+
           // Batch AI categorization (max 100 per chunk to avoid massive context limits)
           const chunkSize = 100;
           for (let i = 0; i < pendingTransactions.length; i += chunkSize) {
