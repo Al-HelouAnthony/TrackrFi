@@ -11,7 +11,7 @@ router.post("/sync", authMiddleware, async (req, res) => {
     res.json({ message: "Sync completed successfully." });
   } catch (err) {
     console.error("Manual sync failed:", err.message);
-    res.status(500).json({ error: "Server error during manual sync." });
+    res.status(500).json({ error: `Sync failed: ${err.message}` });
   }
 });
 

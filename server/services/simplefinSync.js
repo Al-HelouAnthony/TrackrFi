@@ -100,10 +100,17 @@ async function syncInstitution(client, institution) {
         // Update balance and ensure it's attached to the correct institution
         await client.query('UPDATE accounts SET balance = $1, institution_id = $2 WHERE id = $3', [sfAccount.balance, target_institution_id, accountId]);
       } else {
+        // Detect account type based on name
+        let accType = 'Checking';
+        const lowerName = sfAccount.name.toLowerCase();
+        if (lowerName.includes('savings')) accType = 'Savings';
+        else if (lowerName.includes('credit') || lowerName.includes('visa') || lowerName.includes('mastercard')) accType = 'Credit';
+        else if (lowerName.includes('loan') || lowerName.includes('mortgage')) accType = 'Loan';
+
         // Auto-create missing account
         const newAccount = await client.query(
           'INSERT INTO accounts (user_id, institution_id, name, type, balance, simplefin_account_id, currency, logo) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
-          [institution.user_id, target_institution_id, sfAccount.name, 'Bank', sfAccount.balance, sfAccount.id, sfAccount.currency || 'CAD', 'https://logo.clearbit.com/' + (sfAccount.org?.domain || 'bank.com')]
+          [institution.user_id, target_institution_id, sfAccount.name, accType, sfAccount.balance, sfAccount.id, sfAccount.currency || 'CAD', 'https://logo.clearbit.com/' + (sfAccount.org?.domain || 'bank.com')]
         );
         accountId = newAccount.rows[0].id;
       }
@@ -206,5 +213,6 @@ IMPORTANT:
     }
   } catch (err) {
     console.error(`Failed to sync institution ${institution.id}:`, err.message);
+    throw err;
   }
 }

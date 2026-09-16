@@ -1196,7 +1196,7 @@ export default function HomeSkeleton({ token, user, onLogout }) {
                   .catch(err => {
                     console.error("Sync error:", err);
                     setIsAppLoading(false);
-                    alert("Sync failed. Check console for details.");
+                    alert(err.response?.data?.error || "Sync failed. Check console for details.");
                   });
               }}
             >
