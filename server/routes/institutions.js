@@ -7,8 +7,8 @@ import { syncUserInstitutions } from "../services/simplefinSync.js";
 // Manually trigger a SimpleFin sync for the user
 router.post("/sync", authMiddleware, async (req, res) => {
   try {
-    await syncUserInstitutions(req.user.id);
-    res.json({ message: "Sync completed successfully." });
+    const summary = await syncUserInstitutions(req.user.id);
+    res.json({ message: "Sync completed successfully.", summary });
   } catch (err) {
     console.error("Manual sync failed:", err.message);
     res.status(500).json({ error: `Sync failed: ${err.message}` });

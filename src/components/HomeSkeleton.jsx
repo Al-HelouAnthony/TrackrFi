@@ -1188,10 +1188,11 @@ export default function HomeSkeleton({ token, user, onLogout }) {
                 setIsAddMenuOpen(false);
                 setIsAppLoading(true);
                 axios.post(`${API_URL}/institutions/sync`, {}, { headers: { Authorization: `Bearer ${token}` } })
-                  .then(() => {
+                  .then((res) => {
                     setRefreshTrigger(prev => prev + 1);
                     setIsAppLoading(false);
-                    alert("Sync complete!");
+                    const summary = res.data.summary || [];
+                    alert("Sync complete!\n\nFound:\n" + summary.join("\n"));
                   })
                   .catch(err => {
                     console.error("Sync error:", err);

@@ -32,6 +32,7 @@ export async function syncAllUsers() {
 export async function syncUserInstitutions(userId) {
   console.log(`Starting SimpleFin manual sync for user ${userId}...`);
   const client = await pool.connect();
+  let syncSummary = [];
   
   try {
     const uniqueConnections = await client.query(`
@@ -41,9 +42,11 @@ export async function syncUserInstitutions(userId) {
     `, [userId]);
     
     for (const institution of uniqueConnections.rows) {
-      await syncInstitution(client, institution);
+      const summary = await syncInstitution(client, institution);
+      syncSummary = syncSummary.concat(summary);
     }
     console.log(`SimpleFin manual sync for user ${userId} completed.`);
+    return syncSummary;
   } catch (error) {
     console.error(`SimpleFin manual sync error for user ${userId}:`, error);
     throw error;
@@ -70,9 +73,12 @@ async function syncInstitution(client, institution) {
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     
     const data = await response.json();
+    let summary = [];
     
     for (const sfAccount of data.accounts) {
       let target_institution_id = institution.id;
+      let orgName = sfAccount.org ? sfAccount.org.name : 'Unknown';
+      summary.push(`Found account: ${sfAccount.name} (${orgName})`);
       
       // Intelligently group accounts into their correct banks (e.g. CIBC vs RBC)
       if (sfAccount.org && sfAccount.org.name) {
@@ -211,6 +217,7 @@ IMPORTANT:
         }
       }
     }
+    return summary;
   } catch (err) {
     console.error(`Failed to sync institution ${institution.id}:`, err.message);
     throw err;
