@@ -29,6 +29,29 @@ export async function syncAllUsers() {
   }
 }
 
+export async function syncUserInstitutions(userId) {
+  console.log(`Starting SimpleFin manual sync for user ${userId}...`);
+  const client = await pool.connect();
+  
+  try {
+    const uniqueConnections = await client.query(`
+      SELECT DISTINCT ON (simplefin_access_url) id, user_id, simplefin_access_url 
+      FROM institutions 
+      WHERE simplefin_access_url IS NOT NULL AND user_id = $1
+    `, [userId]);
+    
+    for (const institution of uniqueConnections.rows) {
+      await syncInstitution(client, institution);
+    }
+    console.log(`SimpleFin manual sync for user ${userId} completed.`);
+  } catch (error) {
+    console.error(`SimpleFin manual sync error for user ${userId}:`, error);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function syncInstitution(client, institution) {
   try {
     const accessUrl = institution.simplefin_access_url;

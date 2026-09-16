@@ -2,6 +2,18 @@ import express from "express";
 const router = express.Router();
 import authMiddleware from "../middleware/auth.js";
 import pool from "../db.js";
+import { syncUserInstitutions } from "../services/simplefinSync.js";
+
+// Manually trigger a SimpleFin sync for the user
+router.post("/sync", authMiddleware, async (req, res) => {
+  try {
+    await syncUserInstitutions(req.user.id);
+    res.json({ message: "Sync completed successfully." });
+  } catch (err) {
+    console.error("Manual sync failed:", err.message);
+    res.status(500).json({ error: "Server error during manual sync." });
+  }
+});
 
 // Get all institutions with their nested accounts
 router.get("/", authMiddleware, async (req, res) => {
