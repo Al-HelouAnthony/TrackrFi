@@ -129,8 +129,8 @@ async function syncInstitution(client, institution) {
         accountId = existingAccount.rows[0].id;
         
         let cleanAccountName = existingAccount.rows[0].name;
-        // Auto-heal ugly account names
-        if (cleanAccountName === sfAccount.name) {
+        // Auto-heal ugly account names (or retry if they still have numbers/asterisks from a previous rate-limit failure)
+        if (cleanAccountName === sfAccount.name || /[\d*]/.test(cleanAccountName)) {
           try {
             const aiResponse = await ai.models.generateContent({
               model: 'gemini-3.6-flash',
