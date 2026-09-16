@@ -83,16 +83,25 @@ async function syncInstitution(client, institution) {
       // Intelligently group accounts into their correct banks (e.g. CIBC vs RBC)
       if (sfAccount.org && sfAccount.org.name) {
         const existingInst = await client.query(
-          'SELECT id FROM institutions WHERE user_id = $1 AND (name ILIKE $2 OR $2 ILIKE \'%\' || name || \'%\') LIMIT 1', 
-          [institution.user_id, sfAccount.org.name]
+          'SELECT id FROM institutions WHERE user_id = $1 AND (name ILIKE $2 OR $2 ILIKE \'%\' || name || \'%\' OR logo ILIKE $3) LIMIT 1', 
+          [institution.user_id, sfAccount.org.name, `%${sfAccount.org.domain || 'none'}%`]
         );
         
         if (existingInst.rows.length > 0) {
           target_institution_id = existingInst.rows[0].id;
         } else {
+          let cleanOrgName = sfAccount.org.name;
+          try {
+            const aiResponse = await ai.models.generateContent({
+              model: 'gemini-3.6-flash-lite',
+              contents: `Give me just the standard short abbreviation for this bank (e.g. CIBC, RBC, TD, BMO, Scotia). If none, just return a clean short name. No extra text.\nBank: "${sfAccount.org.name}"`
+            });
+            cleanOrgName = aiResponse.text.trim();
+          } catch(e) { console.error("AI org rename failed", e); }
+
           const newInst = await client.query(
             'INSERT INTO institutions (user_id, name, logo, simplefin_access_url) VALUES ($1, $2, $3, $4) RETURNING id',
-            [institution.user_id, sfAccount.org.name, 'https://logo.clearbit.com/' + (sfAccount.org.domain || 'bank.com'), institution.simplefin_access_url]
+            [institution.user_id, cleanOrgName, 'https://logo.clearbit.com/' + (sfAccount.org.domain || 'bank.com'), institution.simplefin_access_url]
           );
           target_institution_id = newInst.rows[0].id;
         }
@@ -113,10 +122,19 @@ async function syncInstitution(client, institution) {
         else if (lowerName.includes('credit') || lowerName.includes('visa') || lowerName.includes('mastercard')) accType = 'Credit';
         else if (lowerName.includes('loan') || lowerName.includes('mortgage')) accType = 'Loan';
 
+        let cleanAccountName = sfAccount.name;
+        try {
+          const aiResponse = await ai.models.generateContent({
+            model: 'gemini-3.6-flash-lite',
+            contents: `Format this bank account name to be clean and simple. Remove any account numbers, asterisks, or random IDs. Just return the clean name. No extra text. Example input: "Everyday Checking *1234" -> Example output: "Everyday Checking".\nAccount: "${sfAccount.name}"`
+          });
+          cleanAccountName = aiResponse.text.trim();
+        } catch(e) { console.error("AI account rename failed", e); }
+
         // Auto-create missing account
         const newAccount = await client.query(
           'INSERT INTO accounts (user_id, institution_id, name, type, balance, simplefin_account_id, currency, logo) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
-          [institution.user_id, target_institution_id, sfAccount.name, accType, sfAccount.balance, sfAccount.id, sfAccount.currency || 'CAD', 'https://logo.clearbit.com/' + (sfAccount.org?.domain || 'bank.com')]
+          [institution.user_id, target_institution_id, cleanAccountName, accType, sfAccount.balance, sfAccount.id, sfAccount.currency || 'CAD', 'https://logo.clearbit.com/' + (sfAccount.org?.domain || 'bank.com')]
         );
         accountId = newAccount.rows[0].id;
       }
