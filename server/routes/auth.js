@@ -38,40 +38,37 @@ router.post("/demo", async (req, res) => {
         const userId = user.id;
 
         // Copy Template Categories
-        const catRes = await client.query('SELECT * FROM template_categories');
-        const templateCats = catRes.rows;
-        
-        const catMap = {};
-        for (const tc of templateCats) {
-          const type = (tc.name === 'Income' || tc.name === 'Transfer In') ? 'income' : 'expense';
-          const insertCat = await client.query(
-            `INSERT INTO categories (user_id, name, plaid_primary_code, icon, color, type) 
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-            [userId, tc.name, tc.plaid_primary_code, tc.icon, tc.color, type]
-          );
-          catMap[tc.id] = insertCat.rows[0].id;
-        }
+        await client.query(
+          `
+          WITH inserted_categories AS (
+              INSERT INTO categories (user_id, name, plaid_primary_code, icon, color, type)
+              SELECT 
+                $1, name, plaid_primary_code, icon, color,
+                CASE WHEN plaid_primary_code IN ('INCOME', 'TRANSFER_IN') THEN 'income'::category_type ELSE 'expense'::category_type END
+              FROM template_categories
+              RETURNING id, plaid_primary_code
+          )
+          INSERT INTO subcategories (category_id, name, plaid_detailed_code)
+          SELECT 
+              ic.id,
+              ts.name,
+              ts.plaid_detailed_code
+          FROM template_subcategories ts
+          JOIN template_categories tc ON ts.template_category_id = tc.id
+          JOIN inserted_categories ic ON ic.plaid_primary_code = tc.plaid_primary_code;
+          `,
+          [userId]
+        );
 
-        const subcatRes = await client.query('SELECT * FROM template_subcategories');
-        for (const ts of subcatRes.rows) {
-          const newCatId = catMap[ts.template_category_id];
-          if (newCatId) {
-            await client.query(
-              `INSERT INTO subcategories (category_id, name, plaid_detailed_code) VALUES ($1, $2, $3)`,
-              [newCatId, ts.name, ts.plaid_detailed_code]
-            );
-          }
-        }
-
-        const foodCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND name = 'Food and Drink'`, [userId]);
-        const transCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND name = 'Transportation'`, [userId]);
-        const incCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND name = 'Income'`, [userId]);
-        const subCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND name = 'General Services'`, [userId]);
+        const foodCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND plaid_primary_code = 'FOOD_AND_DRINK'`, [userId]);
+        const transCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND plaid_primary_code = 'TRANSPORTATION'`, [userId]);
+        const incCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND plaid_primary_code = 'INCOME'`, [userId]);
+        const subCat = await client.query(`SELECT id FROM categories WHERE user_id = $1 AND plaid_primary_code = 'GENERAL_SERVICES'`, [userId]);
         
-        const foodId = foodCat.rows[0]?.id;
-        const transId = transCat.rows[0]?.id;
-        const incId = incCat.rows[0]?.id;
-        const subId = subCat.rows[0]?.id;
+        const foodId = foodCat.rows[0]?.id || null;
+        const transId = transCat.rows[0]?.id || null;
+        const incId = incCat.rows[0]?.id || null;
+        const subId = subCat.rows[0]?.id || null;
 
         const instRes = await client.query(
           `INSERT INTO institutions (user_id, name, logo) VALUES ($1, $2, $3) RETURNING id`,
