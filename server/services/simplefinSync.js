@@ -265,6 +265,15 @@ ${chunk.map((tx, idx) => `[ID: ${idx}] Merchant raw: "${tx.description}", Amount
                     }
                   }
                 }
+              };
+
+              const aiResponse = await ai.models.generateContent({
+                model: 'gemini-3.6-flash',
+                contents: prompt,
+                config: {
+                  responseMimeType: "application/json",
+                  responseSchema: { type: Type.OBJECT, properties: schemaProperties },
+                },
               });
 
               const parsed = JSON.parse(aiResponse.text);
