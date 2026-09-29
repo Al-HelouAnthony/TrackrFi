@@ -12,6 +12,27 @@ export default function App() {
 
   // Auto-login if JWT exists in localStorage
   useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("demo") === "true") {
+      setView("loading");
+      fetch(`${API_URL}/auth/demo`, { method: "POST" })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.token) {
+            localStorage.setItem("token", data.token);
+            localStorage.setItem("user", JSON.stringify(data.user));
+            setToken(data.token);
+            setUser(data.user);
+            setView("home");
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } else {
+            setView("login");
+          }
+        })
+        .catch(() => setView("login"));
+      return;
+    }
+
     const savedToken = localStorage.getItem("token");
     const savedUser = localStorage.getItem("user");
 
